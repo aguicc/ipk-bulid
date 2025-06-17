@@ -27,7 +27,7 @@ jobs:
           
       - name: config 
         run: |
-          wget https://github.com/aguicc/ipk-bulid/.confg 
+          cp .config .config
         
       - name: builder
         run: |
