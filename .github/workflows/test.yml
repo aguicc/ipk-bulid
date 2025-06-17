@@ -10,10 +10,9 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
-
     steps:
-      -name: clone code
+      # 第17行应类似这样：
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
           repository: coolsnowwolf/lede
