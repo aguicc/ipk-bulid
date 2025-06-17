@@ -28,12 +28,7 @@ jobs:
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
-      - name: Configure for IPK/SDK
-        run: |
-          make defconfig
-          cp .config  .config
-          echo "CONFIG_SDK=y" >> .config  # 启用 SDK（包含 IPK 生成）
-          make oldconfig
+
 
       - name: Build packages (IPK)
         run: |
