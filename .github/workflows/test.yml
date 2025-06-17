@@ -11,14 +11,13 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      # 第17行应类似这样：
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           repository: coolsnowwolf/lede
           submodules: recursive
           
-      -name: update feeds
+      - name: update feeds
         run: |
           cd lede/
           sudo apt update
@@ -26,11 +25,11 @@ jobs:
           ./scripts/feeds update -a
           ./scripts/feeds install -a
           
-      -name: config 
+      - name: config 
         run: |
           wget https://github.com/aguicc/ipk-bulid/.confg 
         
-      -name: builder
+      - name: builder
         run: |
           make defconfig
           make download -j8
