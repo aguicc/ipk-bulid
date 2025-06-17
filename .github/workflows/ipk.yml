@@ -1,36 +1,50 @@
-# This is a basic workflow to help you get started with Actions
+name: Build Lean's OpenWRT (IPK Packages)
 
-name: CI
-
-# Controls when the workflow will run
 on:
-  # Triggers the workflow on push or pull request events but only for the "main" branch
   push:
-    branches: [ "main" ]
+    branches: [ master ]
   pull_request:
-    branches: [ "main" ]
+  schedule:
+    - cron: '0 2 * * *'  # 每天 UTC 2:00 自动运行
 
-  # Allows you to run this workflow manually from the Actions tab
-  workflow_dispatch:
-
-# A workflow run is made up of one or more jobs that can run sequentially or in parallel
 jobs:
-  # This workflow contains a single job called "build"
   build:
-    # The type of runner that the job will run on
     runs-on: ubuntu-latest
+    timeout-minutes: 120  # 仅编译 IPK 时间较短
 
-    # Steps represent a sequence of tasks that will be executed as part of the job
     steps:
-      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
-      - uses: actions/checkout@v4
+      - name: Checkout Lean's LEDE
+        uses: actions/checkout@v4
+        with:
+          repository: coolsnowwolf/lede
+          submodules: recursive
 
-      # Runs a single command using the runners shell
-      - name: Run a one-line script
-        run: echo Hello, world!
-
-      # Runs a set of commands using the runners shell
-      - name: Run a multi-line script
+      - name: Install dependencies
         run: |
-          echo Add other actions to build,
-          echo test, and deploy your project.
+          sudo apt-get update
+          sudo apt-get install -y build-essential ccache flex gawk gettext git libncurses5-dev libssl-dev python3 python3-distutils rsync unzip zlib1g-dev
+
+      - name: Update feeds
+        run: |
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      - name: Configure for IPK/SDK
+        run: |
+          make defconfig
+          cp .config  .config
+          echo "CONFIG_SDK=y" >> .config  # 启用 SDK（包含 IPK 生成）
+          make oldconfig
+
+      - name: Build packages (IPK)
+        run: |
+          make package/compile -j$(($(nproc) + 1))  # 仅编译软件包
+          make package/index  # 生成 Packages 索引
+
+      - name: Upload IPK files
+        uses: actions/upload-artifact@v3
+        with:
+          name: openwrt-ipk-packages
+          path: |
+            bin/packages/**/*.ipk
+            bin/targets/**/packages/*.ipk
