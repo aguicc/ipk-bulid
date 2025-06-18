@@ -22,7 +22,7 @@ jobs:
           # rm .config
           #cp -f  localconfig/config  .config
           pwd
-          ls -l ../
+          ls -l 
           echo "------------------------------------------------------------"
           cd "$GITHUB_WORKSPAGE"
           pwd
