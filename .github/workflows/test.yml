@@ -28,7 +28,7 @@ jobs:
           
       - name: config 
         run: |
-          echo “susscess”
+          cat .config
         
       - name: builder
         run: |
