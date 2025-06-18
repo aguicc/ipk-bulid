@@ -19,7 +19,8 @@ jobs:
           
       - name: update feeds
         run: |
-          [[ -e ".config" ]] && cp -f  .config  .config
+          rm .config
+          cp -f  localconfig/config  .config
           pwd
           ls -l ../
           echo "------------------------------------------------------------"
