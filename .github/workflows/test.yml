@@ -26,6 +26,7 @@ jobs:
           sudo apt-get install -y build-essential ccache flex gawk gettext git libncurses5-dev libssl-dev python3 python3-distutils rsync unzip zlib1g-dev
           ./scripts/feeds update -a
           ./scripts/feeds install -a
+          ls
           
       - name: config 
         run: |
