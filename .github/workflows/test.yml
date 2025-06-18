@@ -19,7 +19,7 @@ jobs:
           
       - name: update feeds
         run: |
-          rm .config
+          # rm .config
           cp -f  localconfig/config  .config
           pwd
           ls -l ../
