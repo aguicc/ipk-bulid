@@ -26,7 +26,8 @@ jobs:
           #echo "------------------------------------------------------------"
           cd "$GITHUB_WORKSPAGE"
           #pwd
-          wget https://github.com/aguicc/ipk-bulid/localconfig/config  ./config
+          touch .config
+          wget https://github.com/aguicc/ipk-bulid/localconfig/config >./config
           sudo apt-get update
           sudo apt-get install -y build-essential ccache flex gawk gettext git libncurses5-dev libssl-dev python3 python3-distutils rsync unzip zlib1g-dev
           ./scripts/feeds update -a
