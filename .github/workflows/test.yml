@@ -19,7 +19,7 @@ jobs:
           
       - name: update feeds
         run: |
-          [[ -e ".config" ]] && cp -f  .config  lede/.config
+          [[ -e ".config" ]] && cp -f  .config  .config
           cd "$GITHUB_WORKSPAGE"
           pwd
           sudo apt update
