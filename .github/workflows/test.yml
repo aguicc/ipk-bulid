@@ -19,7 +19,7 @@ jobs:
           
       - name: update feeds
         run: |
-          #[[ -e ".config" ]] && cp -f  .config  .config
+          [[ -e ".config" ]] && cp -f  .config  .config
           pwd
           ls -l ../
           echo "------------------------------------------------------------"
