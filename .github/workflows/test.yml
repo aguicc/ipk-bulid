@@ -19,9 +19,9 @@ jobs:
           
       - name: update feeds
         run: |
-          [[ -e ".config" ]] && cp -f  .config  .config
+          #[[ -e ".config" ]] && cp -f  .config  .config
           pwd
-          ls -l
+          ls -l ../
           echo "------------------------------------------------------------"
           cd "$GITHUB_WORKSPAGE"
           pwd
@@ -30,7 +30,7 @@ jobs:
           ./scripts/feeds update -a
           ./scripts/feeds install -a
           echo "------------------------------------------------------------"
-          cat .confg
+          #cat .confg
           ls -l
           
       - name: config 
