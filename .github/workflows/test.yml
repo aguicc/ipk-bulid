@@ -1,88 +1,96 @@
-name: ipk-bulid
-
-# 触发条件：手动触发 或 push 到 main 分支（可按需修改）
+name: OpenWRT IPK Build (AArch64-musl)
 on:
-  workflow_dispatch:
+  workflow_dispatch:  # 仅手动触发（推荐，避免push频繁编译）
   push:
     branches: [ main ]
+    paths-ignore: [ 'README.md', '*.md' ]  # 忽略文档提交
 
 jobs:
   build:
-    runs-on: ubuntu-22.04  # 稳定版环境，适配 OpenWRT 编译
-    timeout-minutes: 180    # 延长超时时间（工具链编译耗时久）
-
+    runs-on: ubuntu-22.04
+    timeout-minutes: 200  # 延长超时，适配工具链编译
     steps:
-      - name: 1. 拉取源码
+      - name: 1. 拉取源码（递归子模块，修复源码缺失）
         uses: actions/checkout@v4
         with:
-          submodules: 'recursive'  # 递归拉取子模块（解决源码不完整问题）
+          submodules: recursive
           fetch-depth: 0
 
-      - name: 2. 安装编译依赖（完整依赖包，适配 musl+AArch64）
+      - name: 2. 安装完整编译依赖（适配AArch64+musl+GCC）
         run: |
-          sudo apt update && sudo apt upgrade -y
-          sudo apt install -y \
+          sudo apt update -y && sudo apt full-upgrade -y
+          sudo apt install -y --no-install-recommends \
             build-essential libncurses5-dev libncursesw5-dev zlib1g-dev \
             gawk git gettext libssl-dev liblz4-dev swig libelf-dev u-boot-tools \
             bc flex bison rsync unzip curl wget file python3 python3-pip \
-            libgmp3-dev libmpc-dev libmpfr-dev texinfo  # 新增 GCC 编译依赖
+            libgmp3-dev libmpc-dev libmpfr-dev texinfo dosfstools mtools
+          sudo apt autoremove -y && sudo apt clean -y
 
-      - name: 3. 配置交换空间（4G，解决内存不足问题）
+      - name: 3. 配置交换空间（/mnt分区，4G，GitHub官方推荐）
         run: |
-          sudo fallocate -l 4G /swapfile
-          sudo chmod 600 /swapfile
-          sudo mkswap /swapfile
-          sudo swapon /swapfile
-          free -h  # 验证交换空间生效
+          # 检查/mnt磁盘空间
+          df -h /mnt
+          # 在/mnt创建4G交换文件，规避根分区tmpfs限制
+          sudo fallocate -l 4G /mnt/swapfile
+          sudo chmod 600 /mnt/swapfile
+          sudo mkswap /mnt/swapfile
+          sudo swapon /mnt/swapfile
+          # 验证交换空间生效
+          free -h
+          swapon --show
 
-      - name: 4. 修复并配置工具链（使用稳定版 GCC 12.3.0，规避兼容问题）
+      - name: 4. 清理残留缓存+配置稳定版工具链（GCC12.3.0）
         run: |
           cd $GITHUB_WORKSPACE
-          # 清理残留编译缓存
-          make package/libs/toolchain/clean V=s
-          rm -rf staging_dir/toolchain-aarch64_generic_*
-          # 替换 toolchain 为 OpenWRT 23.05 稳定版源码（适配 musl）
+          # 彻底清理工具链/uboot残留编译文件
+          make package/libs/toolchain/clean V=s || true
+          make package/boot/uboot-rockchip/clean V=s || true
+          rm -rf staging_dir/toolchain-aarch64_generic_* build_dir/target-aarch64_* || true
+          # 替换toolchain为OpenWRT23.05稳定版（解决musl兼容问题）
           cd package/libs/toolchain
           git remote add openwrt https://github.com/openwrt/openwrt.git || true
-          git fetch openwrt
-          git checkout openwrt/23.05 -- .
-          cd ../../
-          # 配置编译参数（AArch64+musl+GCC12.3.0）
-          echo 'CONFIG_TARGET_aarch64_generic=y' > .config
-          echo 'CONFIG_TARGET_aarch64_generic_musl=y' >> .config
-          echo 'CONFIG_TOOLCHAIN=y' >> .config
-          echo 'CONFIG_TOOLCHAIN_GCC_VERSION="12.3.0"' >> .config  # 稳定版 GCC
-          echo 'CONFIG_TOOLCHAIN_MUSL=y' >> .config
-          echo 'CONFIG_PACKAGE_uboot-rockchip=y' >> .config  # 编译 uboot-rockchip
-          make defconfig  # 生成默认配置
+          git fetch openwrt 23.05 --depth 1
+          git checkout openwrt/23.05 -- . || true
+          cd $GITHUB_WORKSPACE
+          # 写入核心编译配置（AArch64+musl+GCC12.3.0）
+          cat > .config << EOF
+          CONFIG_TARGET_aarch64_generic=y
+          CONFIG_TARGET_aarch64_generic_musl=y
+          CONFIG_TOOLCHAIN=y
+          CONFIG_TOOLCHAIN_GCC_VERSION="12.3.0"
+          CONFIG_TOOLCHAIN_MUSL=y
+          CONFIG_PACKAGE_uboot-rockchip=y
+          CONFIG_DEVEL=y
+          CONFIG_BUILD_LOG=y
+          EOF
+          make defconfig  # 生成完整配置
 
-      - name: 5. 编译 toolchain（优先编译工具链，单独捕获错误）
+      - name: 5. 编译工具链（单独编译，验证产物，-j2保稳定）
         run: |
           cd $GITHUB_WORKSPACE
-          make package/libs/toolchain/compile V=s -j$(nproc --all)
-          # 验证 toolchain 产物是否生成（关键检查）
+          make package/libs/toolchain/compile V=s -j2
+          # 关键验证：确认ld-musl文件生成（解决原报错核心）
           ls -l staging_dir/toolchain-aarch64_generic_gcc-12.3.0_musl/lib/ld-musl-*
 
-      - name: 6. 编译 uboot-rockchip
+      - name: 6. 编译uboot-rockchip（-j2适配Runner资源）
         run: |
           cd $GITHUB_WORKSPACE
-          make package/boot/uboot-rockchip/compile V=s -j$(nproc --all)
+          make package/boot/uboot-rockchip/compile V=s -j2
 
-      - name: 7. 提取编译产物
+      - name: 7. 提取编译产物（IPK+UBOOT二进制）
         run: |
           cd $GITHUB_WORKSPACE
-          mkdir -p output/ipk output/uboot
-          # 复制 IPK 包（若有其他包可扩展路径）
-          find bin/packages/aarch64_generic/ -name "*.ipk" -exec cp {} output/ipk/ \;
-          # 复制 uboot 产物
-          find bin/targets/aarch64_generic/ -name "uboot-*.bin" -exec cp {} output/uboot/ \;
+          mkdir -p output/uboot output/ipk
+          # 复制UBOOT产物
+          find bin/targets/aarch64_generic/ -name "uboot-*.bin" -o -name "u-boot*.bin" | xargs -I {} cp {} output/uboot/
+          # 复制工具链/uboot相关IPK
+          find bin/packages/aarch64_generic/ -name "uboot*" -o -name "toolchain*" | xargs -I {} cp {} output/ipk/
+          # 查看产物
+          ls -l output/uboot/ output/ipk/
 
-      - name: 8. 上传产物到 GitHub Releases
-        uses: softprops/action-gh-release@v2
-        if: success()
+      - name: 8. 上传产物到Artifact（方便下载，保留7天）
+        uses: actions/upload-artifact@v4
         with:
-          tag_name: build-${{ github.sha }}
-          files: |
-            output/ipk/*.ipk
-            output/uboot/*.bin
-          body: "OpenWRT AArch64-musl 编译产物（uboot-rockchip + 工具链）"
+          name: openwrt-aarch64-uboot-toolchain
+          path: output/
+          retention-days: 7
