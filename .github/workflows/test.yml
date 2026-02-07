@@ -41,7 +41,7 @@ jobs:
         run: |
           echo "success"
 
-      - name:  
+      - name:  aptupdate
         run: |
           sudo apt update
           sudo apt install -y build-essential libncurses5-dev libncursesw5-dev \
