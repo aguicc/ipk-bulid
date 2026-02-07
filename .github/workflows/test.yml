@@ -1,22 +1,19 @@
 name: OpenWRT IPK Build (AArch64-musl)
 on:
-  workflow_dispatch:  # 仅手动触发（推荐，避免push频繁编译）
-  push:
-    branches: [ main ]
-    paths-ignore: [ 'README.md', '*.md' ]  # 忽略文档提交
-
+  workflow_dispatch:  # 仅手动触发，避免误执行
 jobs:
   build:
     runs-on: ubuntu-22.04
-    timeout-minutes: 200  # 延长超时，适配工具链编译
+    timeout-minutes: 200
     steps:
-      - name: 1. 拉取源码（递归子模块，修复源码缺失）
+      - name: 1. 拉取仓库源码（含自定义OpenWRT工程）
         uses: actions/checkout@v4
         with:
           submodules: recursive
           fetch-depth: 0
+          path: ipk-build  # 固定源码目录，避免路径混乱
 
-      - name: 2. 安装完整编译依赖（适配AArch64+musl+GCC）
+      - name: 2. 安装完整编译依赖
         run: |
           sudo apt update -y && sudo apt full-upgrade -y
           sudo apt install -y --no-install-recommends \
@@ -26,33 +23,44 @@ jobs:
             libgmp3-dev libmpc-dev libmpfr-dev texinfo dosfstools mtools
           sudo apt autoremove -y && sudo apt clean -y
 
-      - name: 3. 配置交换空间（/mnt分区，4G，GitHub官方推荐）
+      - name: 3. 配置4G交换空间（/mnt分区，GitHub官方推荐）
         run: |
-          # 检查/mnt磁盘空间
           df -h /mnt
-          # 在/mnt创建4G交换文件，规避根分区tmpfs限制
           sudo fallocate -l 4G /mnt/swapfile
           sudo chmod 600 /mnt/swapfile
           sudo mkswap /mnt/swapfile
           sudo swapon /mnt/swapfile
-          # 验证交换空间生效
           free -h
           swapon --show
 
-      - name: 4. 清理残留缓存+配置稳定版工具链（GCC12.3.0）
+      - name: 4. 初始化OpenWRT编译环境（核心修复：生成Makefile规则）
+        working-directory: ipk-build  # 进入OpenWRT工程根目录
         run: |
-          cd $GITHUB_WORKSPACE
-          # 彻底清理工具链/uboot残留编译文件
+          # 若为OpenWRT官方源码，更新feeds并安装（必做步骤）
+          [ -f ./scripts/feeds ] && ./scripts/feeds update -a && ./scripts/feeds install -a
+          # 生成编译配置文件，创建核心Makefile规则
+          touch .config && make defconfig
+          # 检查关键目录是否存在，不存在则自动拉取（兼容自定义源码）
+          if [ ! -d "package/libs/toolchain" ]; then
+              git clone --depth 1 https://github.com/openwrt/openwrt -b 23.05 openwrt-tmp
+              cp -rf openwrt-tmp/package/libs/toolchain package/libs/
+              cp -rf openwrt-tmp/package/boot/uboot-rockchip package/boot/
+              rm -rf openwrt-tmp
+          fi
+          # 验证目录是否存在
+          ls -ld package/libs/toolchain package/boot/uboot-rockchip
+
+      - name: 5. 清理残留编译缓存
+        working-directory: ipk-build
+        run: |
+          # 容错执行clean，避免目录刚创建无缓存时报错
           make package/libs/toolchain/clean V=s || true
           make package/boot/uboot-rockchip/clean V=s || true
           rm -rf staging_dir/toolchain-aarch64_generic_* build_dir/target-aarch64_* || true
-          # 替换toolchain为OpenWRT23.05稳定版（解决musl兼容问题）
-          cd package/libs/toolchain
-          git remote add openwrt https://github.com/openwrt/openwrt.git || true
-          git fetch openwrt 23.05 --depth 1
-          git checkout openwrt/23.05 -- . || true
-          cd $GITHUB_WORKSPACE
-          # 写入核心编译配置（AArch64+musl+GCC12.3.0）
+
+      - name: 6. 配置编译参数（AArch64+musl+GCC12.3.0稳定版）
+        working-directory: ipk-build
+        run: |
           cat > .config << EOF
           CONFIG_TARGET_aarch64_generic=y
           CONFIG_TARGET_aarch64_generic_musl=y
@@ -62,35 +70,33 @@ jobs:
           CONFIG_PACKAGE_uboot-rockchip=y
           CONFIG_DEVEL=y
           CONFIG_BUILD_LOG=y
+          CONFIG_SKIP_PACKAGE_CHECK=y
           EOF
-          make defconfig  # 生成完整配置
+          make defconfig  # 生成完整编译规则
 
-      - name: 5. 编译工具链（单独编译，验证产物，-j2保稳定）
+      - name: 7. 编译工具链（-j2适配Runner，V=s看详细日志）
+        working-directory: ipk-build
         run: |
-          cd $GITHUB_WORKSPACE
           make package/libs/toolchain/compile V=s -j2
-          # 关键验证：确认ld-musl文件生成（解决原报错核心）
+          # 验证核心文件是否生成（解决原ld-musl缺失问题）
           ls -l staging_dir/toolchain-aarch64_generic_gcc-12.3.0_musl/lib/ld-musl-*
 
-      - name: 6. 编译uboot-rockchip（-j2适配Runner资源）
+      - name: 8. 编译uboot-rockchip
+        working-directory: ipk-build
         run: |
-          cd $GITHUB_WORKSPACE
           make package/boot/uboot-rockchip/compile V=s -j2
 
-      - name: 7. 提取编译产物（IPK+UBOOT二进制）
+      - name: 9. 提取编译产物
+        working-directory: ipk-build
         run: |
-          cd $GITHUB_WORKSPACE
           mkdir -p output/uboot output/ipk
-          # 复制UBOOT产物
-          find bin/targets/aarch64_generic/ -name "uboot-*.bin" -o -name "u-boot*.bin" | xargs -I {} cp {} output/uboot/
-          # 复制工具链/uboot相关IPK
-          find bin/packages/aarch64_generic/ -name "uboot*" -o -name "toolchain*" | xargs -I {} cp {} output/ipk/
-          # 查看产物
-          ls -l output/uboot/ output/ipk/
+          find bin/targets/aarch64_generic/ -name "uboot-*.bin" -o -name "u-boot*.bin" | xargs -I {} cp {} output/uboot/ || true
+          find bin/packages/aarch64_generic/ -name "*.ipk" | xargs -I {} cp {} output/ipk/ || true
+          ls -l output/uboot/ output/ipk/ || true
 
-      - name: 8. 上传产物到Artifact（方便下载，保留7天）
+      - name: 10. 上传产物到Artifact（方便下载）
         uses: actions/upload-artifact@v4
         with:
           name: openwrt-aarch64-uboot-toolchain
-          path: output/
+          path: ipk-build/output/
           retention-days: 7
