@@ -40,7 +40,18 @@ jobs:
       - name: config 
         run: |
           echo "success"
-        
+
+      - name:  
+        run: |
+          sudo apt update
+          sudo apt install -y build-essential libncurses5-dev libncursesw5-dev \
+              zlib1g-dev gawk git gettext libssl-dev xsltproc wget unzip \
+              python3 python3-pip python3-setuptools swig libelf-dev \
+              device-tree-compiler bc flex bison
+
+          # 针对 Rockchip U-Boot 的额外依赖
+          sudo apt install -y gcc-aarch64-linux-gnu gcc-arm-linux-gnueabihf
+          
       - name: builder
         run: |
           make defconfig
