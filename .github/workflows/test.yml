@@ -1,74 +1,88 @@
-# This is a basic workflow to help you get started with Actions
-name: ipk-builder
+name: ipk-bulid
 
+# 触发条件：手动触发 或 push 到 main 分支（可按需修改）
 on:
+  workflow_dispatch:
   push:
-    branches: [ "main" ]
-  pull_request:
-    branches: [ "main" ]
+    branches: [ main ]
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-22.04  # 稳定版环境，适配 OpenWRT 编译
+    timeout-minutes: 180    # 延长超时时间（工具链编译耗时久）
+
     steps:
-      - name: Checkout repository
+      - name: 1. 拉取源码
         uses: actions/checkout@v4
         with:
-          repository: coolsnowwolf/lede
-          submodules: recursive
-          
-      - name: Install all build dependencies (统一安装所有依赖)
+          submodules: 'recursive'  # 递归拉取子模块（解决源码不完整问题）
+          fetch-depth: 0
+
+      - name: 2. 安装编译依赖（完整依赖包，适配 musl+AArch64）
         run: |
-          sudo apt update -y
-          sudo apt full-upgrade -y
-          # 基础编译依赖 + Rockchip U-Boot 专属依赖
+          sudo apt update && sudo apt upgrade -y
           sudo apt install -y \
-            build-essential ccache flex gawk gettext git libncurses5-dev libssl-dev \
-            python3 python3-distutils rsync unzip zlib1g-dev libncursesw5-dev \
-            xsltproc wget python3-pip python3-setuptools swig libelf-dev \
-            device-tree-compiler bc flex bison gcc-aarch64-linux-gnu gcc-arm-linux-gnueabihf
-          sudo apt clean -y
+            build-essential libncurses5-dev libncursesw5-dev zlib1g-dev \
+            gawk git gettext libssl-dev liblz4-dev swig libelf-dev u-boot-tools \
+            bc flex bison rsync unzip curl wget file python3 python3-pip \
+            libgmp3-dev libmpc-dev libmpfr-dev texinfo  # 新增 GCC 编译依赖
 
-      - name: Prepare config file (修复路径拼写错误)
+      - name: 3. 配置交换空间（4G，解决内存不足问题）
         run: |
-          # 正确的工作目录变量：GITHUB_WORKSPACE（少了一个C）
-          cd "$GITHUB_WORKSPACE"
-          # 下载配置文件并验证
-          wget https://raw.githubusercontent.com/aguicc/ipk-bulid/main/localconfig/config -O .config
-          if [ ! -f .config ]; then
-            echo "Error: Config file download failed!"
-            exit 1
-          fi
-          cat .config  # 输出配置内容，便于调试
+          sudo fallocate -l 4G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+          free -h  # 验证交换空间生效
 
-      - name: Update feeds and install packages
+      - name: 4. 修复并配置工具链（使用稳定版 GCC 12.3.0，规避兼容问题）
         run: |
-          cd "$GITHUB_WORKSPACE"
-          ./scripts/feeds update -a
-          ./scripts/feeds install -a
+          cd $GITHUB_WORKSPACE
+          # 清理残留编译缓存
+          make package/libs/toolchain/clean V=s
+          rm -rf staging_dir/toolchain-aarch64_generic_*
+          # 替换 toolchain 为 OpenWRT 23.05 稳定版源码（适配 musl）
+          cd package/libs/toolchain
+          git remote add openwrt https://github.com/openwrt/openwrt.git || true
+          git fetch openwrt
+          git checkout openwrt/23.05 -- .
+          cd ../../
+          # 配置编译参数（AArch64+musl+GCC12.3.0）
+          echo 'CONFIG_TARGET_aarch64_generic=y' > .config
+          echo 'CONFIG_TARGET_aarch64_generic_musl=y' >> .config
+          echo 'CONFIG_TOOLCHAIN=y' >> .config
+          echo 'CONFIG_TOOLCHAIN_GCC_VERSION="12.3.0"' >> .config  # 稳定版 GCC
+          echo 'CONFIG_TOOLCHAIN_MUSL=y' >> .config
+          echo 'CONFIG_PACKAGE_uboot-rockchip=y' >> .config  # 编译 uboot-rockchip
+          make defconfig  # 生成默认配置
 
-      - name: Prepare build environment
+      - name: 5. 编译 toolchain（优先编译工具链，单独捕获错误）
         run: |
-          cd "$GITHUB_WORKSPACE"
-          make defconfig
-          # 下载所有依赖包（多线程），并清理损坏的文件（小于1024字节）
-          make download -j$(nproc)
-          find dl -size -1024c -exec ls -l {} \;
-          find dl -size -1024c -exec rm -f {} \;
+          cd $GITHUB_WORKSPACE
+          make package/libs/toolchain/compile V=s -j$(nproc --all)
+          # 验证 toolchain 产物是否生成（关键检查）
+          ls -l staging_dir/toolchain-aarch64_generic_gcc-12.3.0_musl/lib/ld-musl-*
 
-      - name: Compile (关键修复：单线程+高详细度，优先编译uboot-rockchip)
+      - name: 6. 编译 uboot-rockchip
         run: |
-          cd "$GITHUB_WORKSPACE"
-          # 第一步：单独编译uboot-rockchip，输出详细日志（核心调试步骤）
-          echo "=== Compiling uboot-rockchip with verbose log ==="
-          make package/boot/uboot-rockchip/clean
-          make -j1 V=s package/boot/uboot-rockchip/compile
-          
-          # 如果uboot编译成功，再编译整个项目（单线程，避免资源问题）
-          if [ $? -eq 0 ]; then
-            echo "=== U-Boot compiled successfully, building full image ==="
-            make -j1 V=s
-          else
-            echo "=== U-Boot compile failed! Check the log above ==="
-            exit 1
-          fi
+          cd $GITHUB_WORKSPACE
+          make package/boot/uboot-rockchip/compile V=s -j$(nproc --all)
+
+      - name: 7. 提取编译产物
+        run: |
+          cd $GITHUB_WORKSPACE
+          mkdir -p output/ipk output/uboot
+          # 复制 IPK 包（若有其他包可扩展路径）
+          find bin/packages/aarch64_generic/ -name "*.ipk" -exec cp {} output/ipk/ \;
+          # 复制 uboot 产物
+          find bin/targets/aarch64_generic/ -name "uboot-*.bin" -exec cp {} output/uboot/ \;
+
+      - name: 8. 上传产物到 GitHub Releases
+        uses: softprops/action-gh-release@v2
+        if: success()
+        with:
+          tag_name: build-${{ github.sha }}
+          files: |
+            output/ipk/*.ipk
+            output/uboot/*.bin
+          body: "OpenWRT AArch64-musl 编译产物（uboot-rockchip + 工具链）"
